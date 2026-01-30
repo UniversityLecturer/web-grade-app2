@@ -1,42 +1,51 @@
 import streamlit as st
 import pandas as pd
-import yaml
 
-from loader import read_any
-from roster_master import load_roster_master
-from scoring import build_gradebook
-from export_excel import export_to_excel_bytes
-from normalize import normalize_text
+st.set_page_config(page_title="web-grade-app2 SAFE MODE", layout="wide")
+st.title("SAFE MODE：アップロード確認")
+st.caption("ここではアップロードと読み込みだけ確認します。ロジックは一切動かしません。")
 
-st.set_page_config(page_title="WEB制作運用｜名簿＋フォーム統合", layout="wide")
-st.title("WEB制作運用｜名簿＋フォーム統合 → 採点台帳Excel出力")
-st.caption("学生の個人情報を扱うため、公開運用は避け、ローカル/限定環境推奨")
+roster_file = st.file_uploader("① 名簿（.xlsx / .csv）", type=["xlsx", "csv"], key="roster")
+form_file   = st.file_uploader("② 統合フォーム（.xlsx / .csv）", type=["xlsx", "csv"], key="form")
 
-# -----------------------
-# YAML読み込み
-# -----------------------
-try:
-    with open("config/scoring.yaml", "r", encoding="utf-8") as f:
-        scoring_cfg = yaml.safe_load(f)
-except Exception as e:
-    st.error("config/scoring.yaml の読み込みに失敗しました（インデント/全角記号/```混入を確認）。")
-    st.exception(e)
-    st.stop()
+def read_any_simple(file):
+    name = file.name.lower()
+    if name.endswith(".csv"):
+        return pd.read_csv(file), []
+    if name.endswith(".xlsx") or name.endswith(".xls"):
+        xls = pd.ExcelFile(file)
+        return None, xls.sheet_names
+    raise ValueError("Unsupported file type")
 
-TOTAL_SESSIONS = int(scoring_cfg["attendance"]["total_sessions"])
+def read_excel_sheet(file, sheet_name):
+    return pd.read_excel(file, sheet_name=sheet_name)
 
-# -----------------------
-# 名簿の time（例: 9:10-10:50）から時間帯スロットを作る
-# -----------------------
-JP_WEEKDAY = {"月": 0, "火": 1, "水": 2, "木": 3, "金": 4, "土": 5, "日": 6}
+# 名簿の確認
+if roster_file:
+    st.subheader("名簿の読み込み確認")
+    if roster_file.name.lower().endswith(".xlsx"):
+        _, sheets = read_any_simple(roster_file)
+        s = st.selectbox("名簿シート", sheets, key="roster_sheet")
+        df = read_excel_sheet(roster_file, s)
+    else:
+        df, _ = read_any_simple(roster_file)
 
-def parse_time_range(time_str: str):
-    """
-    '9:10-10:50' -> (550, 650)
-    """
-    s = normalize_text(time_str)
-    if "-" not in s:
-        return None
-    a, b = s.split("-", 1)
-    def to_min(hm: str) -> int:
-        h
+    st.write("名簿：行数", len(df), "列数", len(df.columns))
+    st.write("名簿列名:", list(df.columns))
+    st.dataframe(df.head(20), use_container_width=True)
+
+# フォームの確認
+if form_file:
+    st.subheader("フォームの読み込み確認")
+    if form_file.name.lower().endswith(".xlsx"):
+        _, sheets = read_any_simple(form_file)
+        s = st.selectbox("フォームシート", sheets, key="form_sheet")
+        df = read_excel_sheet(form_file, s)
+    else:
+        df, _ = read_any_simple(form_file)
+
+    st.write("フォーム：行数", len(df), "列数", len(df.columns))
+    st.write("フォーム列名:", list(df.columns))
+    st.dataframe(df.head(20), use_container_width=True)
+
+st.info("SAFE MODEが表示できていれば、アップロードは復旧しています。次はロジックを段階的に戻します。")
