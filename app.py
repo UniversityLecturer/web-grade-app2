@@ -4,8 +4,8 @@ import yaml
 
 from loader import read_any
 from roster_master import load_roster_master
-from latest_email import latest_email_by_student
-from form_submit import count_form_submissions_by_studentno
+from latest_email import latest_email_by_class_studentno
+from form_submit import count_form_submissions_by_class_studentno
 from scoring import build_gradebook
 from export_excel import export_to_excel_bytes
 
@@ -13,7 +13,7 @@ st.set_page_config(page_title="WEB制作運用｜名簿＋フォーム統合", l
 st.title("WEB制作運用｜名簿＋フォーム統合 → 採点台帳Excel出力")
 st.caption("学生の個人情報を扱うため、公開運用は避け、ローカル/限定環境推奨")
 
-# YAML読み込み（壊れてたら画面に出す）
+# YAML読み込み
 try:
     with open("config/scoring.yaml", "r", encoding="utf-8") as f:
         scoring_cfg = yaml.safe_load(f)
@@ -50,6 +50,11 @@ except Exception as e:
     st.exception(e)
     st.stop()
 
+st.write("名簿行数:", len(roster_df), "→ 正規化後:", len(roster_master))
+st.write(
+    "classユニーク数:", roster_master["class"].nunique(),
+    "student_noユニーク数:", roster_master["student_no"].nunique()
+)
 st.dataframe(roster_master, use_container_width=True)
 
 # --- フォーム ---
@@ -63,34 +68,55 @@ else:
 
 st.dataframe(form_df.head(10), use_container_width=True)
 
-# --- フォーム列の割り当て（手動が最強） ---
+# --- フォーム列の割り当て ---
 st.markdown("### フォーム列の割り当て")
 cols = list(form_df.columns)
 
 col_ts = st.selectbox("タイムスタンプ列", cols, index=cols.index("タイムスタンプ") if "タイムスタンプ" in cols else 0)
 col_email = st.selectbox("メール列", cols, index=cols.index("メールアドレス") if "メールアドレス" in cols else 0)
 
+# No列
 default_no_idx = 0
 for i, c in enumerate(cols):
-    if c.lower().startswith("no."):
+    if str(c).lower().startswith("no."):
         default_no_idx = i
         break
 col_no = st.selectbox("student_no（No.）列", cols, index=default_no_idx)
 
-# --- email 最新 & 提出回数 ---
-email_latest = latest_email_by_student(form_df, col_no, col_email, col_ts)
-submit_cnt = count_form_submissions_by_studentno(form_df, col_no, col_ts, cap=total_sessions)
+# Class列（提出回数＆メールのキーに必須）
+default_class_idx = 0
+for i, c in enumerate(cols):
+    if "class" in str(c).lower():
+        default_class_idx = i
+        break
+col_class = st.selectbox("Class列", cols, index=default_class_idx)
 
-# 名簿に反映（未提出でも残る）
-roster_enriched = roster_master.merge(email_latest, on="student_no", how="left", suffixes=("", "_new"))
+# --- 最新メール & 提出回数（class+student_no） ---
+email_latest = latest_email_by_class_studentno(form_df, col_class, col_no, col_email, col_ts)
+submit_cnt = count_form_submissions_by_class_studentno(form_df, col_class, col_no, col_ts, cap=total_sessions)
+
+# 名簿に反映（class+student_no でJOIN）
+roster_enriched = roster_master.merge(email_latest, on=["class", "student_no"], how="left", suffixes=("", "_new"))
 roster_enriched["email"] = roster_enriched["email_new"].fillna(roster_enriched["email"])
 roster_enriched = roster_enriched.drop(columns=["email_new"])
 
-roster_enriched = roster_enriched.merge(submit_cnt, on="student_no", how="left")
+roster_enriched = roster_enriched.merge(submit_cnt, on=["class", "student_no"], how="left")
 roster_enriched["form_submit_count"] = roster_enriched["form_submit_count"].fillna(0).astype(int)
 
 st.markdown("### 名簿（フォーム情報を反映後）")
 st.dataframe(roster_enriched, use_container_width=True)
+
+# --- デバッグ：クラス別フォーム実施日数 ---
+st.write("【デバッグ】クラス別フォーム実施日数")
+dbg = (
+    form_df[[col_class, col_ts]].copy()
+    .assign(date=pd.to_datetime(form_df[col_ts], errors="coerce").dt.date)
+    .groupby(col_class)["date"]
+    .nunique()
+)
+st.write(dbg)
+
+st.write("【デバッグ】form_submit_count 最大値:", int(roster_enriched["form_submit_count"].max() if len(roster_enriched) else 0))
 
 # --- GradeBook ---
 st.markdown("### GradeBook（採点台帳）")
@@ -104,19 +130,6 @@ site_total = st.number_input(
 )
 gradebook["site_requirements_total"] = int(site_total)
 
-# site_total変更分だけ再計算（簡易）
-denom = gradebook["site_requirements_total"].replace(0, 1)
-gradebook["site_points_20"] = (gradebook["site_requirements_done"].clip(lower=0) / denom * float(scoring_cfg["learning"]["site"])).round(1)
-gradebook["learning_points_70_raw"] = (
-    gradebook["report_points_20"]
-    + gradebook["paiza_points_10"]
-    + gradebook["site_points_20"]
-    + gradebook["form_points_10"]
-    + gradebook["final_points_10"]
-).round(1)
-gradebook["learning_points_70"] = (gradebook["learning_points_70_raw"] - gradebook["attitude_penalty"]).clip(lower=0).round(1)
-gradebook["total_100"] = (gradebook["attendance_points_30"] + gradebook["learning_points_70"]).round(1)
-
 st.dataframe(gradebook, use_container_width=True, height=520)
 
 # --- Excel download ---
@@ -127,5 +140,3 @@ st.download_button(
     file_name="WEB制作運用_採点台帳_自動生成.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
-
-
