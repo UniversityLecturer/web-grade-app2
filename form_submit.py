@@ -1,21 +1,50 @@
 import pandas as pd
 from normalize import normalize_text
 
-def count_form_submissions_by_studentno(df: pd.DataFrame, col_student_no: str, col_timestamp: str, cap: int = 15) -> pd.DataFrame:
-    base = df[[col_student_no, col_timestamp]].copy()
-    base[col_student_no] = base[col_student_no].map(normalize_text)
-    base[col_timestamp] = pd.to_datetime(base[col_timestamp], errors="coerce")
+def count_submissions_by_key(
+    form_df: pd.DataFrame,
+    key_cols: list[str],      # ["class", "student_no"]
+    ts_col: str,
+    cap: int | None = None
+) -> pd.DataFrame:
+    """
+    フォーム提出回数を
+    - class + student_no + 日付
+    でユニークに数える（＝1日1回）
 
-    base = base[base[col_student_no] != ""]
-    base = base.dropna(subset=[col_timestamp])
+    同じ日に複数送信しても 1 回扱い。
+    """
 
-    base["date"] = base[col_timestamp].dt.date
-    base = base.drop_duplicates(subset=[col_student_no, "date"])
+    # 必要列だけ抜き出し
+    tmp = form_df[key_cols + [ts_col]].copy()
 
+    # 正規化
+    for k in key_cols:
+        tmp[k] = tmp[k].map(normalize_text)
+
+    tmp[ts_col] = pd.to_datetime(tmp[ts_col], errors="coerce")
+
+    # 欠損除外
+    tmp = tmp.dropna(subset=[ts_col])
+    for k in key_cols:
+        tmp = tmp[tmp[k] != ""]
+
+    # ★ 日付単位に落とす（ここが最重要）
+    tmp["submit_date"] = tmp[ts_col].dt.date
+
+    # ★ 同一日の重複提出を除外
+    tmp = tmp.drop_duplicates(subset=key_cols + ["submit_date"])
+
+    # ★ 日付のユニーク数をカウント
     out = (
-        base.groupby(col_student_no, as_index=False)
-            .size()
-            .rename(columns={"size": "form_submit_count"})
+        tmp.groupby(key_cols, as_index=False)["submit_date"]
+        .nunique()
+        .rename(columns={"submit_date": "form_submit_count"})
     )
-    out["form_submit_count"] = out["form_submit_count"].clip(upper=cap).astype(int)
-    return out.rename(columns={col_student_no: "student_no"})
+
+    # 上限（必要なら）
+    if cap is not None:
+        out["form_submit_count"] = out["form_submit_count"].clip(upper=cap)
+
+    return out
+
